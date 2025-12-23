@@ -37,6 +37,9 @@ env/
 env.bak/
 venv.bak/
 
+# Environment variables (API keys)
+.env
+
 # Pytest
 .pytest_cache/
 
