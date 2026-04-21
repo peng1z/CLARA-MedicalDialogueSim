@@ -1,15 +1,149 @@
-"""Medical NLP and concept extraction (rule-based, minimal)
+"""Medical NLP and concept extraction.
 
-This module exposes functions to:
-- classify question type (open vs closed)
-- extract clinical concepts from a sentence using keyword lists
-- detect empathy / communication features
+This module provides three extraction strategies (tried in order):
+1. **Transformer NER** — HuggingFace clinical-ner model (from VietMed integration)
+2. **spaCy PhraseMatcher** — keyword-based matching with spaCy
+3. **Rule-based fallback** — simple string matching
+
+Also exposes:
+- classify_question (open vs closed)
+- detect_empathy
+- extract_medical_entities (raw NER entities with confidence scores)
+- reasoning pattern extraction (questions + hypotheses from text)
 
 Optional LLM integration is available via analyze_utterance_with_llm().
 """
 from typing import Dict, List, Tuple, Optional, Any
 import re
 from pathlib import Path
+
+# --- Transformer NER (from VietMed.ipynb integration) ---
+try:
+    from transformers import pipeline as hf_pipeline
+    _HF_NER_AVAILABLE = True
+except ImportError:
+    _HF_NER_AVAILABLE = False
+
+_ner_pipeline = None  # lazy-loaded singleton
+
+
+def _get_ner_pipeline():
+    """Lazy-load the HuggingFace clinical NER model (same as VietMed.ipynb)."""
+    global _ner_pipeline
+    if _ner_pipeline is None and _HF_NER_AVAILABLE:
+        try:
+            _ner_pipeline = hf_pipeline(
+                'token-classification',
+                model='samrawal/bert-base-uncased_clinical-ner',
+                aggregation_strategy='simple'
+            )
+        except Exception:
+            pass
+    return _ner_pipeline
+
+
+# Mapping from NER entity text → KB concept names
+_NER_TO_CONCEPT = {
+    # problem entities
+    "chest pain": "chest_pain", "angina": "chest_pain", "chest discomfort": "chest_pain",
+    "pain": "chest_pain",
+    "shortness of breath": "shortness_of_breath", "dyspnea": "shortness_of_breath",
+    "breathless": "shortness_of_breath",
+    "nausea": "nausea_vomiting", "vomiting": "nausea_vomiting", "emesis": "nausea_vomiting",
+    "diaphoresis": "diaphoresis", "sweating": "diaphoresis",
+    "hypertension": "past_medical_history", "diabetes": "past_medical_history",
+    "htn": "past_medical_history", "dm": "past_medical_history",
+    "obesity": "past_medical_history", "copd": "past_medical_history",
+    # treatment entities
+    "aspirin": "medications", "metformin": "medications", "lisinopril": "medications",
+    "beta blocker": "medications", "statin": "medications", "nitroglycerin": "medications",
+    # test entities
+    "ecg": "past_medical_history", "ekg": "past_medical_history",
+    "troponin": "past_medical_history", "cardiac catheterization": "past_medical_history",
+}
+
+
+def extract_medical_entities(text: str, max_length: int = 512) -> List[Dict]:
+    """
+    Extract raw medical entities using the clinical NER model (from VietMed.ipynb).
+
+    Returns list of dicts with keys: word, entity_group, score.
+    Falls back to empty list if model unavailable.
+    """
+    ner = _get_ner_pipeline()
+    if ner is None or not text or len(text.strip()) < 5:
+        return []
+    try:
+        truncated = text[:max_length]
+        entities = ner(truncated)
+        return [
+            {
+                "word": e.get("word", ""),
+                "entity_group": e.get("entity_group", ""),
+                "score": round(e.get("score", 0.0), 4),
+            }
+            for e in entities
+        ]
+    except Exception:
+        return []
+
+
+def _ner_entities_to_concepts(entities: List[Dict]) -> List[str]:
+    """Map NER entity text to KB concept names."""
+    found = set()
+    for ent in entities:
+        word = ent.get("word", "").lower().strip().strip("#")
+        # Direct lookup
+        if word in _NER_TO_CONCEPT:
+            found.add(_NER_TO_CONCEPT[word])
+        else:
+            # Fuzzy: check if any mapping key is contained in the entity word
+            for key, concept in _NER_TO_CONCEPT.items():
+                if key in word or word in key:
+                    found.add(concept)
+                    break
+    return sorted(found)
+
+
+# --- Reasoning pattern extraction (from VietMed.ipynb enhanced patterns) ---
+
+_QUESTION_PATTERNS = [
+    re.compile(r'(?:did|have|any|do you|have you|are you|is there).*?\?', re.I),
+    re.compile(r'(?:assess|evaluate|check|examine).*?(?:\?|for)', re.I),
+    re.compile(r'(?:what|how|when|where|why|which).*?\?', re.I),
+    re.compile(r'(?:can|could|should|would|will).*?\?', re.I),
+    re.compile(r'(?:so|then|now|well).*?\?', re.I),
+    re.compile(r'(?:symptoms|condition|treatment|medicine).*?\?', re.I),
+]
+
+_HYPOTHESIS_PATTERNS = [
+    re.compile(r'(?:likely|probably|suspect|think|consider|rule out).*?(?:\.|,)', re.I),
+    re.compile(r'differential.*?(?:includes|diagnosis)', re.I),
+    re.compile(r'(?:diagnosis|condition|disease).*?(?:is|was|could be).*?(?:\.|,)', re.I),
+    re.compile(r'(?:maybe|perhaps|possibly|might be|could be).*?(?:\.|,)', re.I),
+    re.compile(r'(?:I think|we think|it seems|appears to be).*?(?:\.|,)', re.I),
+    re.compile(r'(?:should|need to|have to|must).*?(?:treat|check|test).*?(?:\.|,)', re.I),
+    re.compile(r'(?:because|since|due to|caused by).*?(?:\.|,)', re.I),
+]
+
+
+def extract_reasoning_patterns(text: str) -> Dict[str, List[str]]:
+    """
+    Extract clinical reasoning patterns (questions and hypotheses) from text.
+    Uses enhanced patterns from VietMed.ipynb integration.
+    """
+    questions = []
+    for pat in _QUESTION_PATTERNS:
+        questions.extend(pat.findall(str(text)))
+
+    hypotheses = []
+    for pat in _HYPOTHESIS_PATTERNS:
+        hypotheses.extend(pat.findall(str(text)))
+
+    return {"questions": questions, "hypotheses": hypotheses}
+
+
+# --- Original imports ---
 
 try:
     import spacy
@@ -70,13 +204,28 @@ def classify_question(text: str) -> str:
 
 
 def extract_concepts(text: str) -> List[str]:
+    """
+    Extract clinical concepts from text. Tries strategies in order:
+    1. Transformer NER model (clinical-ner from VietMed integration)
+    2. spaCy PhraseMatcher
+    3. Rule-based keyword matching
+    """
     text_low = text.lower()
     found = set()
 
-    # Try spaCy PhraseMatcher if available
+    # Strategy 1: Transformer NER model (from VietMed.ipynb)
+    if _HF_NER_AVAILABLE:
+        try:
+            entities = extract_medical_entities(text)
+            ner_concepts = _ner_entities_to_concepts(entities)
+            if ner_concepts:
+                found.update(ner_concepts)
+        except Exception:
+            pass
+
+    # Strategy 2: spaCy PhraseMatcher
     if _SPACY_AVAILABLE:
         try:
-            # Load small English model if not already loaded; this is lazy to avoid import overhead
             nlp = getattr(extract_concepts, "_nlp", None)
             matcher = getattr(extract_concepts, "_matcher", None)
             if nlp is None:
@@ -90,18 +239,16 @@ def extract_concepts(text: str) -> List[str]:
             for match_id, start, end in matches:
                 concept = nlp.vocab.strings[match_id]
                 found.add(concept)
-            if found:
-                return sorted(found)
         except Exception:
-            # Fall back to rule-based extraction if anything goes wrong with spaCy
             pass
 
-    # Rule-based fallback
+    # Strategy 3: Rule-based fallback (always runs to catch what NER misses)
     for concept, keywords in _CONCEPT_KEYWORDS.items():
         for kw in keywords:
             if kw in text_low:
                 found.add(concept)
                 break
+
     return sorted(found)
 
 
@@ -116,7 +263,16 @@ def analyze_utterance(text: str) -> Dict:
     qtype = classify_question(text)
     concepts = extract_concepts(text)
     empathy = detect_empathy(text)
-    return {"text": text, "type": qtype, "concepts": concepts, "empathy": empathy}
+    entities = extract_medical_entities(text)
+    reasoning = extract_reasoning_patterns(text)
+    return {
+        "text": text,
+        "type": qtype,
+        "concepts": concepts,
+        "empathy": empathy,
+        "medical_entities": entities,
+        "reasoning_patterns": reasoning,
+    }
 
 
 def analyze_utterance_with_llm(
