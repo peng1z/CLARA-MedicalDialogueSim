@@ -1,0 +1,19 @@
+{
+  "_source": "cv_audio VietMed .ogg files, Whisper base ASR + deep-translator Vi\u2192En",
+  "total_clips": 85,
+  "errors": 0,
+  "avg_questions": 0.09,
+  "avg_hypotheses": 0.01,
+  "avg_concepts": 0.08,
+  "score_distribution": {
+    "mean": 0.21,
+    "stdev": 0.76,
+    "min": 0.0,
+    "max": 4.0
+  },
+  "expert_vs_trainee": {
+    "expert_avg_reasoning": 4.49,
+    "trainee_avg_reasoning": 0.11,
+    "expert_advantage_x": 42.41
+  }
+}

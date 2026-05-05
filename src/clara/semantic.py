@@ -1,4 +1,7 @@
-"""Semantic alignment engine: compares asked concepts to clinical knowledge DB and finds omissions."""
+"""Semantic alignment engine: compares asked concepts to clinical knowledge DB and finds omissions.
+
+Also provides access to expert reasoning patterns from MIMIC-IV baselines.
+"""
 from typing import Dict, List
 import json
 from pathlib import Path
@@ -11,6 +14,13 @@ _KB_PATH = Path(__file__).resolve().parents[2] / "data" / "clinical_knowledge.js
 def load_kb() -> Dict:
     with open(_KB_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def get_expert_patterns(scenario: str = "scenario_chest_pain") -> Dict:
+    """Load expert reasoning patterns from the knowledge base (from VietMed.ipynb MIMIC-IV analysis)."""
+    kb = load_kb()
+    sc = kb.get(scenario, {})
+    return sc.get("expert_reasoning_patterns", {})
 
 
 def align_concepts_to_kb(asked_concepts: List[str], scenario: str = "scenario_chest_pain") -> Dict:

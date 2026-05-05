@@ -254,6 +254,122 @@ Provide constructive feedback on coverage, technique, and missed areas."""
         return self.provider.generate([{"role": "system", "content": self.SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
 
 
+class LLMClient:
+    """OpenRouter-based LLM client for CLARA medical dialogue analysis.
+
+    Uses Deepseek R1 for reasoning tasks and a smaller model for structured
+    analysis (concept extraction, classification). Reads OPENROUTER_API_KEY
+    from the environment.
+    """
+
+    OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+    model = "deepseek/deepseek-r1-0528"
+    STRUCTURED_MODEL = "qwen/qwen3-8b"
+
+    def __init__(self):
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
+        self.api_key = os.getenv("OPENROUTER_API_KEY")
+        if not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY not set. Add it to your .env file.")
+
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+    def _call(self, messages: List[Dict[str, str]], model: str = None, max_tokens: int = 1024) -> str:
+        import requests as _requests
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model or self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+        resp = _requests.post(self.OPENROUTER_URL, json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+    def analyze_medical_utterance(self, text: str) -> Dict[str, Any]:
+        """Classify a student utterance and extract medical concepts.
+
+        Returns dict with: concepts (list), question_type (open/closed/statement/unclear),
+        clinical_relevance (high/medium/low).
+        """
+        prompt = (
+            "Analyze the following medical student utterance. "
+            "Return a JSON object with exactly these keys:\n"
+            '- "concepts": list of medical concepts mentioned (strings)\n'
+            '- "question_type": one of "open", "closed", "statement", "unclear"\n'
+            '- "clinical_relevance": one of "high", "medium", "low"\n\n'
+            f'Utterance: "{text}"\n\n'
+            "Respond with only the JSON object, no extra text."
+        )
+        messages = [
+            {"role": "system", "content": "You are a clinical education analysis assistant. Return only valid JSON."},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            raw = self._call(messages, model=self.STRUCTURED_MODEL)
+            import json as _json
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                return _json.loads(match.group())
+        except Exception:
+            pass
+        return {"concepts": [], "question_type": "unclear", "clinical_relevance": "medium"}
+
+    def generate_feedback(
+        self,
+        student_concepts: List[str],
+        missing_concepts: List[str],
+        communication_notes: str = "",
+        scenario: str = "chest_pain_diagnosis",
+    ) -> str:
+        """Generate constructive clinical education feedback."""
+        prompt = (
+            f"Scenario: {scenario}\n"
+            f"Concepts the student covered: {', '.join(student_concepts) or 'none'}\n"
+            f"Concepts the student missed: {', '.join(missing_concepts) or 'none'}\n"
+            f"Communication observations: {communication_notes or 'none'}\n\n"
+            "Provide concise, constructive feedback for this medical student. "
+            "Focus on what they did well, what was missing, and specific suggestions to improve."
+        )
+        messages = [
+            {"role": "system", "content": "You are a clinical medical education expert providing feedback to trainees."},
+            {"role": "user", "content": prompt},
+        ]
+        return self._call(messages)
+
+    def generate_case_recommendation(
+        self,
+        student_gaps: List[str],
+        student_id: str = "",
+        recent_performance: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Recommend the next case and learning focus based on student gaps."""
+        perf = recent_performance or {}
+        prompt = (
+            f"Student: {student_id or 'unknown'}\n"
+            f"Knowledge/skill gaps: {', '.join(student_gaps) or 'none identified'}\n"
+            f"Recent performance metrics: {perf}\n\n"
+            "Based on these gaps and performance, recommend:\n"
+            "1. The next clinical case type to practice\n"
+            "2. Specific learning focus areas\n"
+            "3. One concrete study tip\n"
+            "Keep the response brief and actionable."
+        )
+        messages = [
+            {"role": "system", "content": "You are an adaptive medical education advisor."},
+            {"role": "user", "content": prompt},
+        ]
+        return self._call(messages)
+
+
 def get_llm_response(prompt: str, provider: str = "groq") -> str:
     """Quick function to get an LLM response."""
     return MedicalLLM(LLMConfig(provider=provider)).medical_query(prompt)

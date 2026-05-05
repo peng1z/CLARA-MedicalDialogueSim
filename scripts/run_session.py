@@ -86,7 +86,8 @@ def run_simulation(student_id: str = "student_001", use_llm: bool = False):
     if use_llm and llm_client:
         adaptive = generate_adaptive_insights_with_llm(
             student_id,
-            diag_fb.get("missing", []),
+            diag_fb,
+            comm_fb,
             client=llm_client,
             use_llm_fallback=True
         )

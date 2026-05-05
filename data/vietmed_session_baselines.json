@@ -1,0 +1,30 @@
+{
+  "_source": "vietmed_transcripts_cache.json (session-aggregated, dialogue mode)",
+  "total_sessions": 5,
+  "total_clips": 85,
+  "per_session": {
+    "avg_questions": 6.2,
+    "avg_hypotheses": 4.4,
+    "avg_concepts": 1
+  },
+  "score_distribution": {
+    "mean": 32.5,
+    "stdev": 13.12,
+    "min": 22.0,
+    "max": 54.5
+  },
+  "expert_vs_trainee": {
+    "vietmed_expert": {
+      "questions": 33,
+      "hypotheses": 85,
+      "total": 118,
+      "advantage_x": 11.13
+    },
+    "mimic_expert": {
+      "questions": 3.45,
+      "hypotheses": 1.04,
+      "total": 4.49,
+      "advantage_x": 0.42
+    }
+  }
+}
